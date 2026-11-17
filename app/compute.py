@@ -231,6 +231,12 @@ def generate_generation(conn: sqlite3.Connection) -> dict:
                WHERE status='active' AND id<>?""",
             (now_utc_iso(), generation_id),
         )
+        # The new generation changes the baseline, so every earlier manifest
+        # is stale as soon as the new one commits.
+        from .manifest import expire_active_manifests
+        expire_active_manifests(
+            conn, f"新一代结果 {generation_id} 已发布，旧核查清单过期"
+        )
         conn.commit()
     except Exception:
         conn.rollback()

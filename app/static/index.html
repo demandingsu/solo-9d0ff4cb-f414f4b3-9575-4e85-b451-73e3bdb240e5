@@ -31,6 +31,12 @@
   .badge.rejected { background:#ffebe9; color:var(--red); }
   .badge.OK { background:#dafbe1; color:var(--green); }
   .badge.REVIEW { background:#fff8c5; color:var(--amber); }
+  .badge.added { background:#dafbe1; color:var(--green); }
+  .badge.removed { background:#ffebe9; color:var(--red); }
+  .badge.consumption_changed { background:#ddf4ff; color:var(--blue); }
+  .badge.source_readings_changed { background:#fbefff; color:#8250df; }
+  .badge.review_reason_changed { background:#fff8c5; color:var(--amber); }
+  .badge.detail_changed { background:#f6f8fa; color:var(--muted); }
   #toast { position:fixed; right:20px; bottom:20px; max-width:420px; display:grid; gap:8px; z-index:10; }
   .toast { padding:12px 16px; border-radius:8px; color:#fff; font-size:13px; box-shadow:0 4px 12px rgba(0,0,0,.15); }
   .toast.ok { background:var(--green); }
@@ -76,6 +82,43 @@
     <div class="row">
       <button class="primary" onclick="generate()">生成新一代结果</button>
       <button onclick="loadAll()">刷新</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>④ 重载分区核查清单（以最近一代结果为基线）</h2>
+    <p class="hint">对照当前已提交输入重新推算，按账户 UTC 日归集：正常行按归属日、待核行按后笔读数日。
+      列出明细新增、消失、用量变化、待核原因或来源读数变化的账户日及前后依据；清单绑定基线代际与输入批次。
+      上传或生成新一代结果后，旧清单自动标过期，不会再以"现役"发布；生成失败时旧清单保留并标过期。</p>
+    <div class="row">
+      <button class="primary" onclick="buildManifest()">生成核查清单</button>
+      <button onclick="loadAll()">刷新</button>
+    </div>
+    <div class="scroll" style="margin-top:12px">
+      <table id="manifestTable">
+        <thead><tr>
+          <th>清单</th><th>状态</th><th>基线代际</th><th>生成时间 (UTC)</th><th>变更账户日</th>
+          <th>读数批次</th><th>换表批次</th><th>说明</th><th>下载</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>现役清单变更明细（含前后依据，前 200 条）</h2>
+    <p class="hint" id="manifestHint">尚未生成核查清单。</p>
+    <div class="scroll">
+      <table id="changeTable">
+        <thead><tr>
+          <th>账户</th><th>UTC 日</th><th>变化类型</th>
+          <th>基线用量 m³</th><th>当前用量 m³</th>
+          <th>基线待核原因</th><th>当前待核原因</th>
+          <th>基线来源读数</th><th>当前来源读数</th>
+          <th>前后明细依据</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
     </div>
   </section>
 
@@ -159,15 +202,101 @@ async function generate() {
   loadAll();
 }
 
+async function buildManifest() {
+  try {
+    const resp = await fetch('/api/reload-manifests', { method: 'POST' });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || ('HTTP ' + resp.status));
+    toast(data.message);
+  } catch (e) {
+    toast('核查清单生成失败（旧清单保留并标过期）：' + e.message, false);
+  }
+  loadAll();
+}
+
 function esc(v) {
   return String(v ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 }
 
+function changeBadges(csv, labels) {
+  if (!csv) return '';
+  const codes = csv.split(',');
+  const text = labels ? labels.split('；') : codes;
+  return codes.map((c, i) =>
+    `<span class="badge ${esc(c)}" style="margin:1px">${esc(text[i] || c)}</span>`).join(' ');
+}
+
+function evidenceBlock(details) {
+  if (!details || !details.length) return '<span style="color:#656d76">（无）</span>';
+  return details.map(d =>
+    `<div style="margin-bottom:4px">
+       <span class="badge ${esc(d.status)}">${esc(d.status)}</span>
+       <b>${esc(d.meter)}</b>
+       ${esc(d.interval_start_utc || '—')} → ${esc(d.interval_end_utc || '—')}
+       用量=${esc(d.consumption_m3 ?? '—')}
+       ${d.review_reason ? '待核=' + esc(d.review_reason) : ''}
+       <div class="detail">来源读数 ID: ${esc((d.source_reading_ids || []).join(',')) || '—'}</div>
+     </div>`).join('');
+}
+
 async function loadAll() {
-  const [gResp, bResp] = await Promise.all([
-    fetch('/api/generations'), fetch('/api/batches')]);
+  const [gResp, bResp, mResp] = await Promise.all([
+    fetch('/api/generations'), fetch('/api/batches'),
+    fetch('/api/reload-manifests')]);
   const gens = (await gResp.json()).generations;
   const batches = (await bResp.json()).batches;
+  const manifests = (await mResp.json()).manifests;
+
+  document.querySelector('#manifestTable tbody').innerHTML = manifests.map(m => `
+    <tr>
+      <td>${m.id}</td>
+      <td><span class="badge ${m.status}">${m.status}</span></td>
+      <td>${m.baseline_generation_id}</td>
+      <td>${esc(m.created_at)}</td>
+      <td>${m.change_count}</td>
+      <td>${esc(m.reading_batch_ids)}</td>
+      <td>${esc(m.replacement_batch_id ?? '')}</td>
+      <td>${esc(m.status_detail ?? '')}</td>
+      <td><a class="dl" href="/api/reload-manifests/${m.id}/download">下载 CSV</a></td>
+    </tr>`).join('') || '<tr><td colspan="9" style="color:#656d76">尚无核查清单</td></tr>';
+
+  const activeManifest = manifests.find(m => m.status === 'active') || null;
+  const changeBody = document.querySelector('#changeTable tbody');
+  const hint = document.getElementById('manifestHint');
+  if (!activeManifest) {
+    hint.textContent = manifests.length
+      ? '无现役清单（旧清单均已过期，上传或生成新代际后请重新生成清单）。'
+      : '尚未生成核查清单。';
+    changeBody.innerHTML = '<tr><td colspan="10" style="color:#656d76">无现役清单</td></tr>';
+  } else {
+    hint.textContent = `现役清单 #${activeManifest.id}，基线代际 #${activeManifest.baseline_generation_id}，`
+      + `绑定读数批次 [${activeManifest.reading_batch_ids || '无'}]、换表批次 ${activeManifest.replacement_batch_id ?? '无'}。`;
+    const cResp = await fetch(`/api/reload-manifests/${activeManifest.id}/changes?limit=200`);
+    const cData = await cResp.json();
+    changeBody.innerHTML = cData.changes.length
+      ? cData.changes.map(c => `
+        <tr>
+          <td>${esc(c.account)}</td>
+          <td>${esc(c.partition_day)}</td>
+          <td>${changeBadges(c.change_types, c.change_type_labels)}</td>
+          <td>${esc(c.baseline_consumption_m3 ?? '')}</td>
+          <td>${esc(c.current_consumption_m3 ?? '')}</td>
+          <td>${esc((c.baseline_review_reason_labels || []).join('；'))}</td>
+          <td>${esc((c.current_review_reason_labels || []).join('；'))}</td>
+          <td>${esc(c.baseline_source_ids)}</td>
+          <td>${esc(c.current_source_ids)}</td>
+          <td>
+            <details>
+              <summary style="cursor:pointer">前后明细依据</summary>
+              <div style="margin-top:6px">
+                <b>基线：</b>${evidenceBlock(c.baseline_details)}
+                <b>当前：</b>${evidenceBlock(c.current_details)}
+              </div>
+            </details>
+          </td>
+        </tr>`).join('')
+      : '<tr><td colspan="10" style="color:#656d76">无变更账户日（同值重传不会产生虚假分区）</td></tr>';
+  }
 
   document.querySelector('#genTable tbody').innerHTML = gens.map(g => `
     <tr>

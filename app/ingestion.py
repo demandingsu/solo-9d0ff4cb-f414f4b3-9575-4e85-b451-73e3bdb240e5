@@ -177,13 +177,16 @@ def _record_batch(
 
 
 def _expire_active_generation(conn: sqlite3.Connection) -> None:
-    """Any newly committed input supersedes the currently active generation."""
+    """Any newly committed input supersedes the currently active generation
+    and every active reload manifest (the lists are bound to the old inputs)."""
     conn.execute(
         """UPDATE generations
               SET status = 'expired', superseded_at = ?
             WHERE status = 'active'""",
         (now_utc_iso(),),
     )
+    from .manifest import expire_active_manifests
+    expire_active_manifests(conn, "新输入已提交，现役核查清单过期，请重新生成")
 
 
 def _record_rejected_batch(conn: sqlite3.Connection, batch_type: str,

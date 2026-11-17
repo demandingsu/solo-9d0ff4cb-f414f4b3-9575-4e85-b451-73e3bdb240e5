@@ -69,6 +69,26 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 6. **生成失败**（如尚无任何读数）：不发布新结果；旧结果保留可下载，并标记为
    `expired`（`status_detail` 记录失败原因），系统中不会存在声称"现役"的错误结果。
 
+### 重载分区核查清单
+
+迟到读数或换表更正后，值班员需要确定哪些**账户 UTC 日用量分区**必须重载：
+
+1. 以**最近一代结果为基线**，对照当前已提交输入在同一事务内重新推算并按账户日归集：
+   正常行按**归属 UTC 日**（后笔读数日）、待核行按**后笔读数所在 UTC 日**，
+   因此正常/待核状态翻转的行仍落在同一账户日桶内可直接对照。
+2. 每个变化的账户日记录变化类型与**前后依据**（明细行、用量合计、待核原因、来源读数 ID）：
+   - `added` 账户日新增（基线无此分区）、`removed` 账户日消失；
+   - `consumption_changed` 用量变化、`source_readings_changed` 来源读数变化、
+     `review_reason_changed` 待核原因变化、`detail_changed` 其他明细变化兜底。
+3. **迟到读数拆分旧区间**时，区间两侧受影响的 UTC 日都会列入清单；
+   **同值重传**不改变任何账户日，不会产生虚假分区（清单可以为 0 变更）。
+4. 清单**绑定基线代际与输入批次**（`baseline_generation_id`、`reading_batch_ids`、
+   `replacement_batch_id`）。任何新上传或新代结果发布都会使现役清单自动转为
+   `expired`；上传与清单生成交错时，清单在 `BEGIN IMMEDIATE` 事务内快照，
+   不会发布过期的现役清单（任意时刻至多一个 `active`）。
+5. **清单生成失败**：不发布新清单；旧清单保留可追溯并标记为 `expired`
+   （`status_detail` 记录失败原因）。
+
 ## 4. HTTP 接口
 
 | 方法 | 路径 | 说明 |
@@ -80,6 +100,10 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 | GET | `/api/generations/{id}/rows` | 查看某代明细（JSON，分页参数 `limit`） |
 | GET | `/api/generations/{id}/download` | 下载某代结果 CSV（响应头 `X-Generation-Status` 标明状态） |
 | GET | `/api/generations/latest/download` | 下载最新一代结果 |
+| POST | `/api/reload-manifests` | 以最近一代为基线、对照当前输入生成重载核查清单（无基线返回 409） |
+| GET | `/api/reload-manifests` | 列出全部核查清单（active/expired、变更账户日数、绑定的代际与批次） |
+| GET | `/api/reload-manifests/{id}/changes` | 清单变更明细（JSON，含前后依据，分页参数 `limit`） |
+| GET | `/api/reload-manifests/{id}/download` | 下载清单 CSV（响应头 `X-Manifest-Status` 标明状态） |
 | GET | `/api/batches` | 上传批次审计（含 rejected 批次及拒收原因） |
 | GET | `/healthz` | 健康检查 |
 
@@ -97,7 +121,15 @@ status, review_reason, review_reason_detail, source_reading_ids`
 - `readings`：去重后的累计读数，`(account, meter, read_at)` 唯一；
 - `replacements`：当前生效的换表整版快照；
 - `generations`：结果代际及生成时所用的输入批次清单；
-- `result_rows`：每代的区间明细与待核原因。
+- `result_rows`：每代的区间明细与待核原因；
+- `reload_manifests`：重载核查清单（绑定基线代际与输入批次、状态与变更数）；
+- `manifest_changes`：每个变化账户日的变化类型、前后用量/待核原因/来源读数与 JSON 依据。
+
+### 清单下载 CSV 列
+
+`manifest_id, account, partition_utc_day, change_types, change_type_labels,
+baseline_consumption_m3, current_consumption_m3, baseline_review_reasons,
+current_review_reasons, baseline_source_reading_ids, current_source_reading_ids`
 
 ## 6. 测试
 
@@ -110,3 +142,10 @@ python3 -m pytest tests/ -q
 同值重传去重、异值整批拒收（批内/跨批）、迟到读数过期、换表更正过期、
 生成失败保留旧结果、CSV 下载内容、无换表记录待核、朴素时间按 UTC 处理，
 以及多线程上传/生成交错的串行化一致性。
+
+`tests/test_manifest.py` 另覆盖核查清单：无基线 409 且不发布、零变更清单、
+迟到读数拆分区间两侧 UTC 日均覆盖、最早迟到读数新增账户日、
+同值重传不产生虚假分区、换表更正的待核原因变化（待核按后笔读数日归集）、
+清单绑定基线代际与批次、上传/新代际使清单过期、任意时刻仅一个现役清单、
+过期清单仍可下载、清单失败保留旧清单并标过期、多线程上传/清单生成交错不发布
+过期现役清单，以及账户日 diff 的直接单元测试。

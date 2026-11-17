@@ -81,9 +81,40 @@ CREATE TABLE IF NOT EXISTS result_rows (
     source_reading_ids  TEXT NOT NULL     -- comma separated readings.id
 );
 
+-- Reload manifests: which account-day partitions must be reloaded after late
+-- readings / replacement corrections, derived against a baseline generation.
+CREATE TABLE IF NOT EXISTS reload_manifests (
+    id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+    status                  TEXT NOT NULL CHECK (status IN ('active','expired')),
+    status_detail           TEXT,
+    baseline_generation_id  INTEGER NOT NULL REFERENCES generations(id),
+    reading_batch_ids       TEXT NOT NULL,   -- committed reading batches seen when the manifest was built
+    replacement_batch_id    INTEGER,          -- latest committed replacement batch seen when built
+    change_count            INTEGER NOT NULL DEFAULT 0,
+    created_at              TEXT NOT NULL,
+    superseded_at           TEXT
+);
+
+CREATE TABLE IF NOT EXISTS manifest_changes (
+    id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+    manifest_id             INTEGER NOT NULL REFERENCES reload_manifests(id),
+    account                 TEXT NOT NULL,
+    partition_day           TEXT NOT NULL,    -- UTC day: OK rows by attributed day, REVIEW rows by later-reading day
+    change_types            TEXT NOT NULL,    -- comma separated change codes
+    baseline_consumption_m3 REAL,
+    current_consumption_m3  REAL,
+    baseline_review_reasons TEXT,             -- comma separated distinct review reasons in the baseline bucket
+    current_review_reasons  TEXT,
+    baseline_details        TEXT NOT NULL,    -- JSON evidence: baseline rows in the bucket
+    current_details         TEXT NOT NULL,    -- JSON evidence: current recomputed rows in the bucket
+    baseline_source_ids     TEXT NOT NULL,    -- comma separated distinct baseline source reading ids
+    current_source_ids      TEXT NOT NULL     -- comma separated distinct current source reading ids
+);
+
 CREATE INDEX IF NOT EXISTS idx_readings_lookup ON readings(account, meter, read_at);
 CREATE INDEX IF NOT EXISTS idx_replacements_acct ON replacements(account);
 CREATE INDEX IF NOT EXISTS idx_results_gen ON result_rows(generation_id);
+CREATE INDEX IF NOT EXISTS idx_manifest_changes ON manifest_changes(manifest_id);
 """
 
 
